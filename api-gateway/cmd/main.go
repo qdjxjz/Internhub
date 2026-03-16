@@ -36,6 +36,13 @@ func main() {
 		api.GET("/users/me", JWTMiddleware(), proxyToUserWithAuth("GET", "/api/v1/users/me"))
 		api.PATCH("/users/me", JWTMiddleware(), proxyToUserWithAuth("PATCH", "/api/v1/users/me"))
 
+		api.GET("/jobs", proxyToJob())
+		api.GET("/jobs/:id", proxyToJob())
+		api.POST("/jobs", proxyToJob())
+
+		api.POST("/applications", JWTMiddleware(), proxyToApplyWithAuth("POST", "/api/v1/applications"))
+		api.GET("/applications/me", JWTMiddleware(), proxyToApplyWithAuth("GET", "/api/v1/applications/me"))
+
 		api.GET("/protected", JWTMiddleware(), func(c *gin.Context) {
 			userID, _ := c.Get("user_id")
 			c.JSON(http.StatusOK, gin.H{
@@ -68,6 +75,20 @@ func getUserServiceURL() string {
 		return strings.TrimSuffix(u, "/")
 	}
 	return "http://127.0.0.1:8082"
+}
+
+func getJobServiceURL() string {
+	if u := os.Getenv("JOB_SERVICE_URL"); u != "" {
+		return strings.TrimSuffix(u, "/")
+	}
+	return "http://127.0.0.1:8083"
+}
+
+func getApplyServiceURL() string {
+	if u := os.Getenv("APPLY_SERVICE_URL"); u != "" {
+		return strings.TrimSuffix(u, "/")
+	}
+	return "http://127.0.0.1:8084"
 }
 
 func getJWTSecret() []byte {
@@ -108,6 +129,72 @@ func proxyToAuth(method, path string) gin.HandlerFunc {
 }
 
 const headerUserID = "X-User-Id"
+
+func proxyToJob() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.Param("id")
+		path := "/api/v1/jobs"
+		if id != "" {
+			path = path + "/" + id
+		}
+		body, _ := io.ReadAll(c.Request.Body)
+		targetURL := getJobServiceURL() + path
+		req, err := http.NewRequest(c.Request.Method, targetURL, bytes.NewBuffer(body))
+		if err != nil {
+			logger.Log.Error("failed to create proxy request")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			return
+		}
+		req.Header = c.Request.Header.Clone()
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			logger.Log.Error("job service unavailable: " + err.Error())
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "job service unavailable"})
+			return
+		}
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), respBody)
+	}
+}
+
+func proxyToApplyWithAuth(method, path string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID, exists := c.Get("user_id")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing user context"})
+			return
+		}
+		var body io.Reader
+		if method != "GET" && c.Request.Body != nil {
+			bodyBytes, _ := io.ReadAll(c.Request.Body)
+			body = bytes.NewBuffer(bodyBytes)
+		}
+		targetURL := getApplyServiceURL() + path
+		if q := c.Request.URL.RawQuery; q != "" {
+			targetURL += "?" + q
+		}
+		req, err := http.NewRequest(method, targetURL, body)
+		if err != nil {
+			logger.Log.Error("failed to create proxy request")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+			return
+		}
+		req.Header = c.Request.Header.Clone()
+		req.Header.Set(headerUserID, fmt.Sprint(userID))
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			logger.Log.Error("apply service unavailable: " + err.Error())
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "apply service unavailable"})
+			return
+		}
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), respBody)
+	}
+}
 
 func proxyToUserWithAuth(method, path string) gin.HandlerFunc {
 	return func(c *gin.Context) {
