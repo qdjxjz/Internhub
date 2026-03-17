@@ -4,3 +4,10 @@ vendor/
 .DS_Store
 login.json
 token.txt
+
+# frontend
+web/node_modules
+web/dist
+
+# 本地文档（不推送）
+docs/
